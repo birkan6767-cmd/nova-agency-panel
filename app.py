@@ -2573,3 +2573,49 @@ ${net:,.2f}
         st.info(
             "Nova Agency Enterprise v3.0"
         )
+        st.markdown("---")
+st.subheader("📥 Catchii Excel ile Otomatik Güncelleme")
+st.write("Catchii ajans panelinden indirdiğiniz güncel Excel raporunu buraya yükleyerek tüm yayıncıların saat ve kristallerini tek tıkla güncelleyebilirsiniz.")
+
+uploaded_file = st.file_uploader("Catchii Raporunu Yükle (.xlsx veya .xls)", type=["xlsx", "xls"])
+
+if uploaded_file is not None:
+    if st.button("🔄 Verileri Eşleştir ve Sistemi Güncelle"):
+        try:
+            df_excel = pd.read_excel(uploaded_file)
+            db = get_db()
+            updated_count = 0
+            
+            for index, row in df_excel.iterrows():
+                # Catchii raporundaki kilit kolonlar
+                c_id = str(row["Catchii ID"]).strip()
+                c_hours = float(row["On mic duration(h)"])
+                
+                # Kristal değerindeki olası boşlukları "0" yaparak al
+                c_crystals = int(pd.to_numeric(row["Gift-receiving Crystals"], errors='coerce') or 0)
+                
+                # Sistemdeki yayıncıyı Catchii ID'si ile tespit et
+                publisher = db.query(PublisherDB).filter(PublisherDB.uid == c_id).first()
+                
+                if publisher:
+                    # Yeni verileri doğrudan üzerine yaz
+                    publisher.hours = c_hours
+                    publisher.crystals = c_crystals
+                    
+                    # Seviye (Tier) ve komisyon oranını yeni kristale göre otomatik hesapla
+                    tier, commission = tier_calculator(c_crystals)
+                    publisher.tier = tier
+                    publisher.commission = commission
+                    
+                    updated_count += 1
+                    
+            db.commit()
+            
+            # İşlem kaydını loglara ekle
+            audit("Toplu Excel Güncellemesi", "Sistem Otomasyonu", "", f"{updated_count} yayıncının verisi güncellendi.")
+            db.close()
+            
+            st.success(f"🎉 Operasyon Başarılı! Toplam {updated_count} yayıncının kotası ve finansal hakedişi saniyeler içinde sisteme işlendi.")
+            
+        except Exception as e:
+            st.error(f"Dosya işlenirken bir sorun oluştu. Lütfen doğru Catchii formatını yüklediğinizden emin olun. Detay: {e}")
