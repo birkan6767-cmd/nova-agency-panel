@@ -3430,3 +3430,50 @@ else:
     with tabs[6]: st.subheader("💰 Finans")
     with tabs[7]: st.subheader("📜 Log")
     with tabs[8]: st.subheader("⚙️ Ayarlar")
+        with st.expander("📥 Catchii Excel Raporu ile Toplu Güncelleme", expanded=True):
+            st.write("Catchii panelinden indirdiğiniz Excel raporunu buraya yükleyerek tüm yayıncıların saat ve kristallerini saniyeler içinde güncelleyebilirsiniz.")
+            uploaded_file = st.file_uploader("Catchii Raporunu Yükle (.xlsx)", type=["xlsx", "xls"], key="excel_upload_admin")
+            if uploaded_file is not None:
+                if st.button("🔄 Verileri Eşleştir ve Güncelle", key="btn_update_excel"):
+                    try:
+                        # Doğrudan "detail" (detay) sekmesini okuyoruz
+                        df_excel = pd.read_excel(uploaded_file, sheet_name="detail")
+                        db = get_db()
+                        up_count = 0
+                        
+                        for _, row in df_excel.iterrows():
+                            c_id = str(row["Catchii ID"]).strip()
+                            c_hours = float(row["On mic duration(h)"])
+                            c_crystals = int(pd.to_numeric(row["Gift-receiving Crystals"], errors='coerce') or 0)
+                            
+                            # Veritabanında bu ID var mı diye bakıyoruz
+                            publisher = db.query(PublisherDB).filter(PublisherDB.uid == c_id).first()
+                            if publisher:
+                                publisher.hours = c_hours
+                                publisher.crystals = c_crystals
+                                tier, commission = tier_calculator(c_crystals)
+                                publisher.tier = tier
+                                publisher.commission = commission
+                                up_count += 1
+                            else:
+                                # Eğer veritabanında yoksa, Excel'deki Nickname ile otomatik yeni yayıncı olarak ekleyelim!
+                                c_name = str(row.get("Nickname", "İsimsiz Yayıncı"))
+                                tier, commission = tier_calculator(c_crystals)
+                                new_pub = PublisherDB(
+                                    name=c_name,
+                                    uid=c_id,
+                                    hours=c_hours,
+                                    crystals=c_crystals,
+                                    tier=tier,
+                                    commission=commission,
+                                    status="Aktif"
+                                )
+                                db.add(new_pub)
+                                up_count += 1
+                                
+                        db.commit()
+                        audit("Toplu Excel Güncellemesi", "Admin", "", f"{up_count} yayıncı güncellendi/eklendi.")
+                        db.close()
+                        st.success(f"🎉 Başarılı! Toplam {up_count} yayıncının verisi sisteme işlendi.")
+                    except Exception as e:
+                        st.error(f"Hata oluştu: {e}")
