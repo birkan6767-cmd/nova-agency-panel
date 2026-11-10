@@ -1,3 +1,4 @@
+import html
 import os
 import re
 import shutil
@@ -222,13 +223,14 @@ if menu == "👥 Yayıncı Portalı":
     tab_search, tab_apply = st.tabs(["🔍 Performans Sorgula", "📝 Ajansa Başvur"])
     
     with tab_search:
-        search = st.text_input("Catchii ID veya adınız", placeholder="Örn: 52546533")
+        search = st.text_input("Catchii ID'niz", placeholder="Örn: 52546533")
         if search:
             search = search.lower().strip()
             if publishers_df.empty:
                 st.info("Sistemde henüz yayıncı bulunmuyor.")
             else:
-                result = publishers_df[publishers_df["name"].fillna("").str.lower().str.contains(search) | publishers_df["uid"].fillna("").str.lower().str.contains(search)]
+                # Güvenlik: sadece tam ID eşleşmesi. Kısmi/regex arama başkalarının kazancını döküyordu.
+                result = publishers_df[publishers_df["uid"].fillna("").str.strip().str.lower() == search]
                 if result.empty:
                     st.warning("Yayıncı bulunamadı.")
                 else:
@@ -241,9 +243,9 @@ if menu == "👥 Yayıncı Portalı":
                         
                         st.markdown(f"""
                         <div class="pub-card">
-                        <h2>⭐ {row["name"]}</h2>
-                        <p><strong>Catchii ID:</strong> {row["uid"]}</p>
-                        <p><strong>Durum:</strong> {row["status"]} | <strong>Tier:</strong> {row["tier"]}</p>
+                        <h2>⭐ {html.escape(str(row["name"]))}</h2>
+                        <p><strong>Catchii ID:</strong> {html.escape(str(row["uid"]))}</p>
+                        <p><strong>Durum:</strong> {html.escape(str(row["status"]))} | <strong>Tier:</strong> {html.escape(str(row["tier"]))}</p>
                         <hr>
                         <h3>📊 Kota Durumu</h3>
                         <p>🕒 Saat: <strong>{row["hours"]:.1f}</strong> / {target_hours} — %{hour_percent:.0f}</p>
@@ -385,7 +387,7 @@ else:
         filtered = publishers_df.copy()
         if search:
             q = search.lower()
-            filtered = filtered[filtered["name"].str.lower().str.contains(q, na=False) | filtered["uid"].str.lower().str.contains(q, na=False)]
+            filtered = filtered[filtered["name"].str.lower().str.contains(q, na=False, regex=False) | filtered["uid"].str.lower().str.contains(q, na=False, regex=False)]
         
         if not filtered.empty:
             st.dataframe(filtered[["name", "uid", "contact_info", "tier", "hours", "crystals", "status"]].rename(columns={"uid": "Catchii ID"}), use_container_width=True)
