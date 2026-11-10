@@ -230,3 +230,76 @@ def test_beklenmeyen_hatada_cokmez_gecersiz_der(sahte_db, tmp_path, monkeypatch)
     assert ok is False and restored is None
     assert rapor[-1] == "SONUÇ: GEÇERSİZ YEDEK"
     assert any("RuntimeError" in r for r in rapor)
+
+
+# ---- Doğrulama aracı: açılış testi ve nihai sonuç --------------------------
+
+import importlib.util  # noqa: E402
+
+
+def _arac_modulu():
+    spec = importlib.util.spec_from_file_location("yedek_dogrula_test", ROOT / "tools" / "yedek_dogrula.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _araci_calistir(mod, zip_yolu, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["yedek_dogrula.py", str(zip_yolu)])
+    with pytest.raises(SystemExit) as cikis:
+        mod.main()
+    return cikis.value.code, capsys.readouterr().out.strip().splitlines()
+
+
+def _saglam_zip(sahte_db, tmp_path):
+    data, _ = nova_yedek.create_backup_zip(str(sahte_db))
+    z = tmp_path / "saglam.zip"
+    z.write_bytes(data)
+    return z
+
+
+def test_ok_sonucu_tek_ve_en_sonda_acilis_testinden_sonra(sahte_db, tmp_path, monkeypatch, capsys):
+    mod = _arac_modulu()
+    kod, satirlar = _araci_calistir(mod, _saglam_zip(sahte_db, tmp_path), monkeypatch, capsys)
+    assert kod == 0
+    assert satirlar[-1] == "SONUÇ: OK (tüm kontroller geçti)"
+    assert sum(s.startswith("SONUÇ") for s in satirlar) == 1
+    acilis = [i for i, s in enumerate(satirlar) if s.startswith("Uygulama açılış testi")]
+    assert acilis and acilis[0] < len(satirlar) - 1
+
+
+def test_acilis_testinde_beklenmeyen_hata_cokertmez(sahte_db, tmp_path, monkeypatch, capsys):
+    import streamlit.testing.v1 as st_test
+
+    def patla(*a, **k):
+        raise RuntimeError("beklenmeyen")
+
+    monkeypatch.setattr(st_test.AppTest, "from_file", patla)
+    mod = _arac_modulu()
+    eski = os.getcwd()
+    kod, satirlar = _araci_calistir(mod, _saglam_zip(sahte_db, tmp_path), monkeypatch, capsys)
+    assert os.getcwd() == eski  # çalışma dizini geri yüklendi
+    assert kod == 1
+    assert any("HATA (açılış testi beklenmeyen şekilde durdu: RuntimeError)" in s for s in satirlar)
+    assert satirlar[-1] == "SONUÇ: BAŞARISIZ (uygulama açılış testi geçmedi)"
+    assert not any(s.startswith("SONUÇ: OK") for s in satirlar)
+
+
+def test_uygulama_hata_verirse_basarisiz(sahte_db, tmp_path, monkeypatch, capsys):
+    mod = _arac_modulu()
+    bozuk_kok = tmp_path / "bozuk_kok"; bozuk_kok.mkdir()
+    (bozuk_kok / "app.py").write_text("raise ValueError('uygulama acilmadi')\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "ROOT", bozuk_kok)
+    kod, satirlar = _araci_calistir(mod, _saglam_zip(sahte_db, tmp_path), monkeypatch, capsys)
+    assert kod == 1
+    assert satirlar[-1] == "SONUÇ: BAŞARISIZ (uygulama açılış testi geçmedi)"
+
+
+def test_acilis_testi_yapilmadiysa_acikca_belirtilir(sahte_db, tmp_path, monkeypatch, capsys):
+    mod = _arac_modulu()
+    z = _saglam_zip(sahte_db, tmp_path)
+    monkeypatch.setitem(sys.modules, "streamlit.testing.v1", None)  # import → ImportError
+    kod, satirlar = _araci_calistir(mod, z, monkeypatch, capsys)
+    assert kod == 0
+    assert "Uygulama açılış testi (geri yüklenen kopya): YAPILMADI (streamlit kurulu değil)" in satirlar
+    assert satirlar[-1].startswith("SONUÇ: OK — DİKKAT: uygulama açılış testi YAPILMADI")

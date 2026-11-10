@@ -22,20 +22,33 @@ sys.path.insert(0, str(ROOT))
 import nova_yedek  # noqa: E402
 
 
+ACILIS_OK = "OK"
+ACILIS_ATLANDI = "YAPILMADI (streamlit kurulu değil)"
+
+
 def uygulama_acilis_testi(restored_db):
+    """Uygulamayı geri yüklenen KOPYA ile açar. Hiçbir durumda istisna fırlatmaz.
+
+    Dönüş: "OK", "YAPILMADI (...)" veya "HATA (...)".
+    """
     try:
         from streamlit.testing.v1 import AppTest
     except ImportError:
-        return "ATLANDI (streamlit kurulu değil)"
-    with tempfile.TemporaryDirectory() as tmp:
-        shutil.copy(restored_db, os.path.join(tmp, nova_yedek.DB_ARCNAME))
-        eski = os.getcwd()
-        os.chdir(tmp)
-        try:
-            at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60).run()
-            return "OK" if not at.exception else "HATA (uygulama geri yüklenen kopyayla açılmadı)"
-        finally:
-            os.chdir(eski)
+        return ACILIS_ATLANDI
+    eski = os.getcwd()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            shutil.copy(restored_db, os.path.join(tmp, nova_yedek.DB_ARCNAME))
+            os.chdir(tmp)
+            try:
+                at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60).run()
+            finally:
+                os.chdir(eski)
+            if at.exception:
+                return "HATA (uygulama geri yüklenen kopyayla açılırken hata verdi)"
+            return ACILIS_OK
+    except Exception as e:  # açılış testi asla aracı çökertmemeli
+        return f"HATA (açılış testi beklenmeyen şekilde durdu: {type(e).__name__})"
 
 
 def main():
@@ -43,12 +56,22 @@ def main():
         raise SystemExit("Kullanım: python tools/yedek_dogrula.py <yedek.zip>")
     with tempfile.TemporaryDirectory() as work:
         ok, rapor, restored = nova_yedek.verify_backup_zip(sys.argv[1], work)
-        print("\n".join(rapor))
-        if ok:
-            sonuc = uygulama_acilis_testi(restored)
-            print(f"Uygulama açılış testi (geri yüklenen kopya): {sonuc}")
-            ok = not sonuc.startswith("HATA")
-    sys.exit(0 if ok else 1)
+        if not ok:
+            print("\n".join(rapor))  # son satır zaten "SONUÇ: FARK VAR" veya "SONUÇ: GEÇERSİZ YEDEK"
+            sys.exit(1)
+        # Yedek ve geri yükleme geçti; nihai SONUÇ ancak açılış testinden sonra yazılır.
+        print("\n".join(rapor[:-1]))
+        print("Yedek ve geri yükleme kontrolleri: GEÇTİ")
+        acilis = uygulama_acilis_testi(restored)
+        print(f"Uygulama açılış testi (geri yüklenen kopya): {acilis}")
+    if acilis == ACILIS_OK:
+        print("SONUÇ: OK (tüm kontroller geçti)")
+        sys.exit(0)
+    if acilis == ACILIS_ATLANDI:
+        print("SONUÇ: OK — DİKKAT: uygulama açılış testi YAPILMADI; yalnızca yedek ve geri yükleme doğrulandı.")
+        sys.exit(0)
+    print("SONUÇ: BAŞARISIZ (uygulama açılış testi geçmedi)")
+    sys.exit(1)
 
 
 if __name__ == "__main__":
