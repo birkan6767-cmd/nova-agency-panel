@@ -1,9 +1,12 @@
+import hashlib
+import hmac
 import html
 import os
 import re
 import shutil
 import sqlite3
 from pathlib import Path
+import time
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -31,7 +34,33 @@ APP_NAME = "Nova Agency"
 DB_FILE = "nova_agency_enterprise.db"
 DB_URL = f"sqlite:///{os.path.abspath(DB_FILE)}"
 
-ADMIN_PASSWORD = "18811938"
+# Yönetici şifresi koda YAZILMAZ. Sadece scrypt özeti st.secrets veya ortam
+# değişkeninden okunur. Özet üretmek için: python tools/sifre_ozeti_olustur.py
+def _admin_password_hash():
+    try:
+        value = st.secrets.get("ADMIN_PASSWORD_HASH", "")
+    except Exception:
+        value = ""
+    return value or os.environ.get("ADMIN_PASSWORD_HASH", "")
+
+
+def verify_admin_password(password):
+    stored = _admin_password_hash()
+    try:
+        algo, salt_hex, hash_hex = stored.split("$")
+        if algo != "scrypt":
+            return False
+        candidate = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt_hex), n=2**14, r=8, p=1)
+        return hmac.compare_digest(candidate.hex(), hash_hex)
+    except (ValueError, AttributeError):
+        return False
+
+
+MAX_LOGIN_ATTEMPTS = 5
+
+# GEÇİCİ: Yayıncıya özel erişim kodu gelene kadar portal kristal ve hakediş
+# göstermez (ID'yi bilen herkes portalı açabiliyor). Erişim kodu eklenince True yapılacak.
+PORTAL_SHOW_EARNINGS = False
 
 engine = create_engine(
     DB_URL,
@@ -240,6 +269,13 @@ if menu == "👥 Yayıncı Portalı":
                         crystal_percent = min(100, row["crystals"] / target_crystals * 100)
                         gross = row["crystals"] / 2500
                         net = gross * row["commission"] / 100
+                        if PORTAL_SHOW_EARNINGS:
+                            earnings_html = f"""<p>💎 Kristal: <strong>{row["crystals"]:,}</strong> / {target_crystals:,} — %{crystal_percent:.0f}</p>
+                        <hr>
+                        <h3>💰 Tahmini Hakediş</h3>
+                        <p>Brüt: <strong>${gross:.2f}</strong> | Net Hakedişin: <strong>${net:.2f}</strong></p>"""
+                        else:
+                            earnings_html = "<p>💎 Kristal ve hakediş bilgileri güvenlik güncellemesi nedeniyle geçici olarak yalnızca ajans yöneticinizden öğrenilebilir.</p>"
                         
                         st.markdown(f"""
                         <div class="pub-card">
@@ -249,10 +285,7 @@ if menu == "👥 Yayıncı Portalı":
                         <hr>
                         <h3>📊 Kota Durumu</h3>
                         <p>🕒 Saat: <strong>{row["hours"]:.1f}</strong> / {target_hours} — %{hour_percent:.0f}</p>
-                        <p>💎 Kristal: <strong>{row["crystals"]:,}</strong> / {target_crystals:,} — %{crystal_percent:.0f}</p>
-                        <hr>
-                        <h3>💰 Tahmini Hakediş</h3>
-                        <p>Brüt: <strong>${gross:.2f}</strong> | Net Hakedişin: <strong>${net:.2f}</strong></p>
+                        {earnings_html}
                         </div>
                         """, unsafe_allow_html=True)
 
@@ -302,11 +335,19 @@ else:
                 password = st.text_input("Yönetici Şifresi", type="password")
                 login = st.form_submit_button("🔓 GİRİŞ YAP")
                 if login:
-                    if password == ADMIN_PASSWORD:
+                    attempts = st.session_state.get("login_attempts", 0)
+                    if not _admin_password_hash():
+                        st.error("Yönetici girişi yapılandırılmamış (ADMIN_PASSWORD_HASH eksik).")
+                    elif attempts >= MAX_LOGIN_ATTEMPTS:
+                        st.error("Çok fazla hatalı deneme. Sayfayı daha sonra yenileyin.")
+                    elif verify_admin_password(password):
+                        st.session_state.login_attempts = 0
                         st.session_state.logged_in = True
                         st.success("Giriş başarılı.")
                         st.rerun()
                     else:
+                        st.session_state.login_attempts = attempts + 1
+                        time.sleep(1)
                         st.error("❌ Hatalı şifre.")
         st.stop()
 

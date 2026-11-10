@@ -60,3 +60,11 @@ def test_basvuru_formundan_gelen_html_kacirilir(app):
 
     kart = yayinci_kartlari(app.ara("T0777"))[0]
     assert "<img" not in kart
+
+
+def test_portal_gecici_olarak_kristal_ve_hakedis_gostermez(app):
+    # T0002: 55.000 kristal (sahte). Ne ham sayı, ne yüzde, ne para tutarı görünmeli.
+    kart = yayinci_kartlari(app.ara("T0002"))[0]
+    for gizli in ("55,000", "55000", "Brüt", "Net Hakediş", "$", "Kristal: <strong>"):
+        assert gizli not in kart, gizli
+    assert "geçici olarak" in kart
