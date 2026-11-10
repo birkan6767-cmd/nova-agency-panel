@@ -10,6 +10,9 @@
       "Bash(sqlite3:*)",
       "Bash(git push --force:*)",
       "Bash(git push origin main:*)"
+    ],
+    "allow": [
+      "mcp__claude-code-remote__create_trigger"
     ]
   }
 }
