@@ -39,3 +39,12 @@ Bu dosya Claude'un bu repoda nasıl çalışacağını belirler (Karpathy tarzı
 - `ponytail` — kod yazmadan önce "buna gerçekten gerek var mı?" sorgusu.
 - `ui-ux-pro-max` — arayüz işlerinde şablon değil, tasarımcı işi gibi görünen ekranlar.
 - `caveman` — `/caveman` ile çok kısa cevap modu (token tasarrufu).
+
+## Ajanlar (`.claude/agents/`)
+- `kod-inceleyici` — commit öncesi hata/sadelik incelemesi (salt okunur).
+- `guvenlik-denetcisi` — sırlar, HTML enjeksiyonu, kişisel veri sızıntısı denetimi (salt okunur).
+- `test-yazici` — pytest + Streamlit AppTest; testler gerçek veritabanına yazmaz.
+- `veri-uzmani` — Excel içe/dışa aktarma, pandas, şema migrasyonu.
+- `streamlit-tasarimci` — boş sekmeleri ve ekranları `ui-ux-pro-max` kurallarıyla tasarlar.
+
+Önerilen akış: `superpowers` planı → `test-yazici` → kod (`veri-uzmani` / `streamlit-tasarimci`) → `kod-inceleyici` + `guvenlik-denetcisi`.
