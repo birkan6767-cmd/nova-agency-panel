@@ -1,16 +1,18 @@
 import hashlib
 import hmac
-import html
 import os
 import re
 import shutil
 import sqlite3
+import threading
 from pathlib import Path
 import time
 from datetime import datetime, timedelta
 
 import pandas as pd
 import streamlit as st
+
+import nova_yedek
 
 from sqlalchemy import (
     create_engine,
@@ -56,11 +58,57 @@ def verify_admin_password(password):
         return False
 
 
-MAX_LOGIN_ATTEMPTS = 5
+# ---- Sunucu tarafı yönetici deneme sınırı -------------------------------
+# Sayaç tüm oturumların paylaştığı sunucu belleğinde tutulur: yeni sekme/oturum
+# açmak sınırı aşmaz. Anahtar şifre özetinin parmak izidir; Secrets'taki özet
+# değiştirilirse kilit kalkar (acil çıkış). IP adresi kullanılmaz (sahtelenebilir).
+LOGIN_WINDOW_S = 15 * 60       # bu süre içindeki hatalar sayılır
+LOGIN_MAX_FAILS = 5            # bu kadar hatada kilit
+LOCK_BASE_S = 60               # ilk kilit 1 dk, sonra ikiye katlanır
+LOCK_MAX_S = 15 * 60           # en uzun kilit 15 dk
+LOCK_LEVEL_RESET_S = 60 * 60   # 1 saat sessizlikten sonra kilit seviyesi sıfırlanır
+ADMIN_IDLE_TIMEOUT_S = 30 * 60 # 30 dk hareketsizlikte yönetici oturumu kapanır
+APPLICATION_OK_MESSAGE = "🎉 Başvurunuz alındı! Ekibimiz sizinle iletişime geçecek."
 
-# GEÇİCİ: Yayıncıya özel erişim kodu gelene kadar portal kristal ve hakediş
-# göstermez (ID'yi bilen herkes portalı açabiliyor). Erişim kodu eklenince True yapılacak.
-PORTAL_SHOW_EARNINGS = False
+
+@st.cache_resource
+def _login_limiter():
+    return {"lock": threading.Lock(), "state": {}}
+
+
+def _admin_key():
+    return "admin:" + hashlib.sha256(_admin_password_hash().encode()).hexdigest()[:16]
+
+
+def admin_lock_remaining(now):
+    lim = _login_limiter()
+    with lim["lock"]:
+        s = lim["state"].get(_admin_key())
+        return max(0, int(s["locked_until"] - now)) if s else 0
+
+
+def admin_register_failure(now):
+    lim = _login_limiter()
+    with lim["lock"]:
+        s = lim["state"].setdefault(_admin_key(), {"fails": [], "locked_until": 0, "level": 0, "last_fail": 0, "since_success": 0})
+        if now - s["last_fail"] > LOCK_LEVEL_RESET_S:
+            s["level"] = 0
+        s["last_fail"] = now
+        s["since_success"] += 1
+        s["fails"] = [t for t in s["fails"] if now - t < LOGIN_WINDOW_S] + [now]
+        if len(s["fails"]) >= LOGIN_MAX_FAILS:
+            s["locked_until"] = now + min(LOCK_MAX_S, LOCK_BASE_S * 2 ** s["level"])
+            s["level"] += 1
+            s["fails"] = []
+            return True
+        return False
+
+
+def admin_register_success():
+    lim = _login_limiter()
+    with lim["lock"]:
+        s = lim["state"].pop(_admin_key(), None)
+        return s["since_success"] if s else 0
 
 engine = create_engine(
     DB_URL,
@@ -252,42 +300,10 @@ if menu == "👥 Yayıncı Portalı":
     tab_search, tab_apply = st.tabs(["🔍 Performans Sorgula", "📝 Ajansa Başvur"])
     
     with tab_search:
-        search = st.text_input("Catchii ID'niz", placeholder="Örn: 52546533")
-        if search:
-            search = search.lower().strip()
-            if publishers_df.empty:
-                st.info("Sistemde henüz yayıncı bulunmuyor.")
-            else:
-                # Güvenlik: sadece tam ID eşleşmesi. Kısmi/regex arama başkalarının kazancını döküyordu.
-                result = publishers_df[publishers_df["uid"].fillna("").str.strip().str.lower() == search]
-                if result.empty:
-                    st.warning("Yayıncı bulunamadı.")
-                else:
-                    for _, row in result.iterrows():
-                        target_hours, target_crystals = target_calculator(row["tier"])
-                        hour_percent = min(100, row["hours"] / target_hours * 100)
-                        crystal_percent = min(100, row["crystals"] / target_crystals * 100)
-                        gross = row["crystals"] / 2500
-                        net = gross * row["commission"] / 100
-                        if PORTAL_SHOW_EARNINGS:
-                            earnings_html = f"""<p>💎 Kristal: <strong>{row["crystals"]:,}</strong> / {target_crystals:,} — %{crystal_percent:.0f}</p>
-                        <hr>
-                        <h3>💰 Tahmini Hakediş</h3>
-                        <p>Brüt: <strong>${gross:.2f}</strong> | Net Hakedişin: <strong>${net:.2f}</strong></p>"""
-                        else:
-                            earnings_html = "<p>💎 Kristal ve hakediş bilgileri güvenlik güncellemesi nedeniyle geçici olarak yalnızca ajans yöneticinizden öğrenilebilir.</p>"
-                        
-                        st.markdown(f"""
-                        <div class="pub-card">
-                        <h2>⭐ {html.escape(str(row["name"]))}</h2>
-                        <p><strong>Catchii ID:</strong> {html.escape(str(row["uid"]))}</p>
-                        <p><strong>Durum:</strong> {html.escape(str(row["status"]))} | <strong>Tier:</strong> {html.escape(str(row["tier"]))}</p>
-                        <hr>
-                        <h3>📊 Kota Durumu</h3>
-                        <p>🕒 Saat: <strong>{row["hours"]:.1f}</strong> / {target_hours} — %{hour_percent:.0f}</p>
-                        {earnings_html}
-                        </div>
-                        """, unsafe_allow_html=True)
+        # Güvenlik: yayıncıya özel erişim kodu gelene kadar portal hiçbir yayıncı
+        # bilgisi göstermez (isim, ID, durum, tier, saat, kristal, hakediş).
+        st.info("Performans sorgulama güvenlik güncellemesi nedeniyle geçici olarak kapalı. "
+                "Bilgileriniz için ajans yöneticinizle iletişime geçin.")
 
     with tab_apply:
         st.subheader("🚀 Nova Agency Ailesine Katıl")
@@ -306,7 +322,9 @@ if menu == "👥 Yayıncı Portalı":
                     try:
                         existing = db.query(PublisherDB).filter(PublisherDB.uid == applicant_uid.strip()).first()
                         if existing:
-                            st.error("Bu Catchii ID zaten kayıtlı.")
+                            # Güvenlik: ID'nin kayıtlı olduğu sızmasın; yeni başvuruyla aynı mesaj.
+                            audit("Tekrar başvuru (kayıt değişmedi)", "", applicant_uid.strip(), "")
+                            st.success(APPLICATION_OK_MESSAGE)
                         else:
                             publisher = PublisherDB(
                                 name=applicant_name.strip(), uid=applicant_uid.strip(),
@@ -317,7 +335,7 @@ if menu == "👥 Yayıncı Portalı":
                             db.add(publisher)
                             db.commit()
                             audit("Yeni başvuru", applicant_name, applicant_uid, applicant_contact)
-                            st.success("🎉 Başvurunuz başarıyla gönderildi!")
+                            st.success(APPLICATION_OK_MESSAGE)
                     finally:
                         db.close()
 
@@ -335,28 +353,45 @@ else:
                 password = st.text_input("Yönetici Şifresi", type="password")
                 login = st.form_submit_button("🔓 GİRİŞ YAP")
                 if login:
-                    attempts = st.session_state.get("login_attempts", 0)
+                    now = time.time()
+                    remaining = admin_lock_remaining(now) if _admin_password_hash() else 0
                     if not _admin_password_hash():
                         st.error("Yönetici girişi yapılandırılmamış (ADMIN_PASSWORD_HASH eksik).")
-                    elif attempts >= MAX_LOGIN_ATTEMPTS:
-                        st.error("Çok fazla hatalı deneme. Sayfayı daha sonra yenileyin.")
+                    elif remaining:
+                        st.error(f"Çok fazla hatalı deneme. Giriş {remaining // 60 + 1} dk geçici olarak kilitli.")
                     elif verify_admin_password(password):
-                        st.session_state.login_attempts = 0
+                        failed = admin_register_success()
+                        audit("Yönetici girişi", "Admin", "", f"önceki hatalı deneme: {failed}")
                         st.session_state.logged_in = True
-                        st.success("Giriş başarılı.")
+                        st.session_state.admin_key = _admin_key()
+                        st.session_state.admin_last_seen = now
+                        st.session_state.failed_since_last_login = failed
                         st.rerun()
                     else:
-                        st.session_state.login_attempts = attempts + 1
-                        time.sleep(1)
+                        if admin_register_failure(now):
+                            audit("Yönetici girişi kilitlendi", "Admin", "", "")
                         st.error("❌ Hatalı şifre.")
         st.stop()
 
+    # Oturum geçerliliği: şifre özeti değiştiyse veya 30 dk hareketsiz kalındıysa çıkış.
+    now = time.time()
+    if (st.session_state.get("admin_key") != _admin_key()
+            or now - st.session_state.get("admin_last_seen", 0) > ADMIN_IDLE_TIMEOUT_S):
+        for k in ("logged_in", "admin_key", "admin_last_seen", "backup_zip", "backup_manifest"):
+            st.session_state.pop(k, None)
+        st.warning("Oturumunuz sona erdi. Lütfen tekrar giriş yapın.")
+        st.stop()
+    st.session_state.admin_last_seen = now
+
     st.title("⭐ Nova Agency Enterprise")
+    if st.session_state.get("failed_since_last_login"):
+        st.warning(f"⚠️ Son başarılı girişten beri {st.session_state.failed_since_last_login} hatalı giriş denemesi oldu.")
     c1, c2 = st.columns([5, 1])
     with c1: st.write("Komuta Merkezi Aktif.")
     with c2:
         if st.button("🔒 Çıkış"):
-            st.session_state.logged_in = False
+            for k in ("logged_in", "admin_key", "admin_last_seen", "backup_zip", "backup_manifest", "failed_since_last_login"):
+                st.session_state.pop(k, None)
             st.rerun()
 
     tabs = st.tabs(["📊 KOMUTA", "👥 YAYINCILAR", "📈 PERFORMANS", "🏆 ÖDÜLLER", "🎙️ ODALAR", "⚖️ CEZALAR", "💰 FİNANS", "📜 LOG", "⚙️ AYARLAR"])
@@ -439,4 +474,31 @@ else:
     with tabs[5]: st.subheader("⚖️ Cezalar")
     with tabs[6]: st.subheader("💰 Finans")
     with tabs[7]: st.subheader("📜 Log")
-    with tabs[8]: st.subheader("⚙️ Ayarlar")
+    with tabs[8]:
+        st.subheader("⚙️ Ayarlar")
+        st.markdown("#### 💾 Tam veritabanı yedeği")
+        st.caption("Tüm tabloların tutarlı anlık görüntüsü + doğrulama manifesti. "
+                   "Dosya kişisel veri içerir: yalnızca güvenli bir yerde saklayın, kimseyle paylaşmayın.")
+        if st.button("Yedeği hazırla", key="btn_backup_prepare"):
+            try:
+                backup_bytes, backup_manifest = nova_yedek.create_backup_zip(os.path.abspath(DB_FILE))
+                st.session_state.backup_zip = backup_bytes
+                st.session_state.backup_manifest = backup_manifest
+                total_rows = sum(t["rows"] for t in backup_manifest["tables"].values())
+                audit("Tam yedek hazırlandı", "Admin", "", f"{len(backup_manifest['tables'])} tablo, {total_rows} satır")
+            except Exception as e:
+                st.error(f"Yedek alınamadı: {type(e).__name__}")
+        if "backup_zip" in st.session_state:
+            backup_manifest = st.session_state.backup_manifest
+            st.write(f"Bütünlük kontrolü: **{backup_manifest['integrity_check']}** · Zaman (UTC): {backup_manifest['created_at_utc']}")
+            st.dataframe(
+                pd.DataFrame([{"Tablo": k, "Satır": v["rows"]} for k, v in sorted(backup_manifest["tables"].items())]),
+                hide_index=True,
+            )
+            st.download_button(
+                "⬇️ Yedeği indir (.zip)",
+                data=st.session_state.backup_zip,
+                file_name="nova_yedek_" + backup_manifest["created_at_utc"][:19].replace(":", "-") + ".zip",
+                mime="application/zip",
+                key="btn_backup_download",
+            )

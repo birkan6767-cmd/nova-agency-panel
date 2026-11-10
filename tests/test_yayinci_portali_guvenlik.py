@@ -1,70 +1,56 @@
-"""Yayıncı portalı güvenlik testleri (sadece sahte veri)."""
-import pytest
+"""Yayıncı portalı (Aşama 0) güvenlik testleri — yalnızca sahte veri."""
+import sqlite3
 
-from conftest import yayinci_kartlari
+from streamlit.testing.v1 import AppTest
 
-
-@pytest.mark.parametrize("sorgu", [".", ".*", "T", "test", "yayinci", "0"])
-def test_kismi_veya_joker_arama_baskalarinin_verisini_gostermez(app, sorgu):
-    at = app.ara(sorgu)
-    assert yayinci_kartlari(at) == [], f"'{sorgu}' araması yayıncı verisi döktü"
+from conftest import APP_PATH, SAHTE_YAYINCILAR, calistir, sayfa_metni
 
 
-@pytest.mark.parametrize("sorgu", ["(", "[", "*", "\\"])
-def test_ozel_karakterler_uygulamayi_cokertmez(app, sorgu):
-    app.ara(sorgu)  # _calistir istisna olmadığını doğrular
+def test_portalda_sorgu_kutusu_yok_ve_hicbir_yayinci_bilgisi_gorunmez(sahte_db):
+    at = calistir(AppTest.from_file(APP_PATH))
+    # Portalda yalnızca başvuru formu alanları var (Ad, ID, İletişim) — sorgu kutusu yok.
+    assert [t.label for t in at.text_input] == ["Ad Soyad *", "Catchii ID *", "Telefon / Instagram *"]
+    metin = sayfa_metni(at)
+    for name, uid, contact, crystals, hours in SAHTE_YAYINCILAR:
+        for alan in (name, uid, contact, f"{crystals:,}", str(crystals)):
+            assert alan not in metin, alan
+    assert "geçici olarak kapalı" in metin
 
 
-def test_tam_id_eslesmesi_tek_kayit_gosterir(app):
-    kartlar = yayinci_kartlari(app.ara("T0002"))
-    assert len(kartlar) == 1
-    assert "T0002" in kartlar[0]
-
-
-def test_id_bas_son_bosluk_ve_buyuk_kucuk_harf_toleransi(app):
-    assert len(yayinci_kartlari(app.ara("  t0002 "))) == 1
-
-
-def test_isim_ile_arama_kart_gostermez(app):
-    assert yayinci_kartlari(app.ara("Test Yayinci Iki")) == []
-
-
-def test_iletisim_bilgisi_portalda_gosterilmez(app):
-    kart = yayinci_kartlari(app.ara("T0001"))[0]
-    assert "0500 000 00 01" not in kart
-
-
-ZARARLI = '<img src=x onerror="document.title=1">'
-
-
-def test_yayinci_adindaki_html_kacirilir(app):
-    app.ekle([(ZARARLI, "T0666", "x", 0, 0.0)])
-    kart = yayinci_kartlari(app.ara("T0666"))[0]
-    assert "<img" not in kart
-    assert "&lt;img" in kart
-
-
-def test_basvuru_formundan_gelen_html_kacirilir(app):
-    """Saldırgan herkese açık başvuru formuna zararlı isim girer; kart kaçırılmış göstermeli."""
-    from streamlit.testing.v1 import AppTest
-    from conftest import APP_PATH, _calistir
-
-    at = _calistir(AppTest.from_file(APP_PATH))
-    # Başvuru formu alanları: Ad Soyad, Catchii ID, Telefon/Instagram (arama kutusundan sonra)
-    at.text_input[1].set_value(ZARARLI)
-    at.text_input[2].set_value("T0777")
-    at.text_input[3].set_value("0500 000 00 77")
+def _basvur(ad, uid, iletisim):
+    at = calistir(AppTest.from_file(APP_PATH))
+    at.text_input[0].set_value(ad)
+    at.text_input[1].set_value(uid)
+    at.text_input[2].set_value(iletisim)
     at.button[0].click()
-    _calistir(at)
-    assert any("başarıyla" in s.value for s in at.success)
-
-    kart = yayinci_kartlari(app.ara("T0777"))[0]
-    assert "<img" not in kart
+    return calistir(at)
 
 
-def test_portal_gecici_olarak_kristal_ve_hakedis_gostermez(app):
-    # T0002: 55.000 kristal (sahte). Ne ham sayı, ne yüzde, ne para tutarı görünmeli.
-    kart = yayinci_kartlari(app.ara("T0002"))[0]
-    for gizli in ("55,000", "55000", "Brüt", "Net Hakediş", "$", "Kristal: <strong>"):
-        assert gizli not in kart, gizli
-    assert "geçici olarak" in kart
+def test_yeni_ve_tekrar_basvuru_ayni_mesaji_verir_kayit_cogalmaz(sahte_db):
+    yeni = _basvur("Yeni Aday", "T0999", "0500 000 00 99")
+    tekrar = _basvur("Baska Biri", "T0001", "0500 000 00 98")  # T0001 zaten kayıtlı
+    assert [s.value for s in yeni.success] == [s.value for s in tekrar.success]
+    assert len(yeni.success) == 1
+    assert not tekrar.error
+    con = sqlite3.connect(sahte_db)
+    assert con.execute("SELECT COUNT(*) FROM publishers WHERE uid='T0001'").fetchone()[0] == 1
+    assert con.execute("SELECT name, contact_info FROM publishers WHERE uid='T0001'").fetchone() == ("Test Yayinci Bir", "0500 000 00 01")
+    assert con.execute("SELECT COUNT(*) FROM publishers WHERE uid='T0999'").fetchone()[0] == 1
+    con.close()
+
+
+def test_eksik_alanli_basvuru_kayit_olusturmaz(sahte_db):
+    at = _basvur("", "T0888", "")
+    assert at.error
+    con = sqlite3.connect(sahte_db)
+    assert con.execute("SELECT COUNT(*) FROM publishers WHERE uid='T0888'").fetchone()[0] == 0
+    con.close()
+
+
+def test_html_iceren_basvuru_yonetici_tablosunda_duz_metin(sahte_db):
+    """Başvurudaki HTML hiçbir yerde unsafe_allow_html ile basılmamalı."""
+    zararli = '<img src=x onerror="document.title=1">'
+    _basvur(zararli, "T0666", "x")
+    at = calistir(AppTest.from_file(APP_PATH))
+    for m in at.markdown:
+        assert zararli not in m.value
