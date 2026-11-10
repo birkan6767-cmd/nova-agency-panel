@@ -92,27 +92,75 @@ def _compare(expected, actual, label, report):
     return ok
 
 
+GECERSIZ = "SONUÇ: GEÇERSİZ YEDEK"
+
+
+def _gecersiz(*mesajlar):
+    return False, list(mesajlar) + [GECERSIZ], None
+
+
+def manifest_hatasi(manifest):
+    """Manifest beklenen yapıda değilse açık bir hata mesajı, uygunsa None döndürür."""
+    if not isinstance(manifest, dict):
+        return "Manifest geçersiz: JSON nesnesi değil."
+    if not isinstance(manifest.get("sqlite_file_sha256"), str):
+        return "Manifest geçersiz: veritabanı dosya özeti (sqlite_file_sha256) eksik."
+    tables = manifest.get("tables")
+    if not isinstance(tables, dict) or not tables:
+        return "Manifest geçersiz: 'tables' bölümü eksik veya boş."
+    for name, t in tables.items():
+        if not isinstance(t, dict):
+            return f"Manifest geçersiz: '{name}' tablosunun kaydı bozuk."
+        rows = t.get("rows")
+        if not isinstance(rows, int) or isinstance(rows, bool) or rows < 0:
+            return f"Manifest geçersiz: '{name}' tablosunun satır sayısı eksik veya hatalı."
+        if not isinstance(t.get("sha256"), str) or not isinstance(t.get("columns"), list):
+            return f"Manifest geçersiz: '{name}' tablosunun özet veya kolon bilgisi eksik."
+    return None
+
+
 def verify_backup_zip(zip_source, workdir):
-    """(ok, rapor_satirlari, geri_yuklenen_db_yolu) döndürür.
+    """(ok, rapor_satirlari, geri_yuklenen_db_yolu) döndürür. Hiçbir girdide istisna fırlatmaz.
 
     zip_source: dosya yolu veya bytes. workdir: geçici çalışma dizini.
+    Geçersiz/bozuk yedekte ok=False, son satır "SONUÇ: GEÇERSİZ YEDEK" ve yol None olur.
     """
+    try:
+        return _verify(zip_source, workdir)
+    except Exception as e:  # doğrulayıcı asla çökmemeli; ayrıntı yerine hata türü yazılır
+        return _gecersiz(f"Beklenmeyen doğrulama hatası ({type(e).__name__}); yedek güvenilir sayılmamalı.")
+
+
+def _verify(zip_source, workdir):
     report = []
-    data = zip_source if isinstance(zip_source, (bytes, bytearray)) else open(zip_source, "rb").read()
+    if isinstance(zip_source, (bytes, bytearray)):
+        data = bytes(zip_source)
+    else:
+        try:
+            with open(zip_source, "rb") as f:
+                data = f.read()
+        except OSError:
+            return _gecersiz("Yedek dosyası okunamadı (yol yanlış veya erişim yok).")
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             names = set(z.namelist())
             if not {DB_ARCNAME, MANIFEST_ARCNAME} <= names:
-                return False, ["Zip içinde veritabanı veya manifest eksik."], None
-            manifest = json.loads(z.read(MANIFEST_ARCNAME).decode("utf-8"))
+                return _gecersiz("Zip içinde veritabanı veya manifest dosyası eksik.")
+            try:
+                manifest = json.loads(z.read(MANIFEST_ARCNAME).decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return _gecersiz("Manifest geçersiz: okunabilir JSON değil.")
+            hata = manifest_hatasi(manifest)
+            if hata:
+                return _gecersiz(hata)
             extracted = os.path.join(workdir, "yedekten_cikan.db")
             with z.open(DB_ARCNAME) as src, open(extracted, "wb") as dst:
                 shutil.copyfileobj(src, dst)
-    except (zipfile.BadZipFile, json.JSONDecodeError, KeyError):
-        return False, ["Zip dosyası okunamadı veya bozuk."], None
+    except zipfile.BadZipFile:
+        return _gecersiz("Zip dosyası okunamadı veya bozuk.")
 
     ok = True
-    if _file_sha256(extracted) != manifest.get("sqlite_file_sha256"):
+    if _file_sha256(extracted) != manifest["sqlite_file_sha256"]:
         report.append("Veritabanı dosyasının özeti manifestle eşleşmiyor.")
         ok = False
 
@@ -120,9 +168,9 @@ def verify_backup_zip(zip_source, workdir):
     try:
         ok &= _compare(manifest, table_manifest(con), "yedek", report)
     except sqlite3.DatabaseError:
+        return _gecersiz(*report, "Veritabanı dosyası açılamadı (SQLite dosyası değil veya bozuk).")
+    finally:
         con.close()
-        return False, report + ["Veritabanı dosyası açılamadı (bozuk)."], None
-    con.close()
 
     restored = os.path.join(workdir, DB_ARCNAME)
     src = sqlite3.connect(f"file:{extracted}?mode=ro", uri=True)
@@ -140,4 +188,4 @@ def verify_backup_zip(zip_source, workdir):
         f"Tablo sayısı: {len(manifest['tables'])}, toplam satır: {total}",
     ] + [f"  - {name}: {t['rows']} satır" for name, t in sorted(manifest["tables"].items())]
     report = header + report + ["SONUÇ: OK" if ok else "SONUÇ: FARK VAR"]
-    return ok, report, restored
+    return ok, report, (restored if ok else None)

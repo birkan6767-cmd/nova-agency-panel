@@ -138,3 +138,95 @@ def test_yonetici_yedegi_hazirlar_ve_denetim_kaydi_dusulur(sahte_db, monkeypatch
     con = sqlite3.connect(sahte_db)
     assert con.execute("SELECT COUNT(*) FROM audit_logs WHERE action='Tam yedek hazırlandı'").fetchone()[0] == 1
     con.close()
+
+
+# ---- Bozuk / eksik manifest: çökmeden açık hata ---------------------------
+
+def _manifest_ile(data, manifest_text):
+    return _zip_degistir(data, manifest=manifest_text)
+
+
+def _gecerli_manifest(data):
+    return json.loads(zipfile.ZipFile(io.BytesIO(data)).read(nova_yedek.MANIFEST_ARCNAME))
+
+
+def _bozuk_manifestler(data):
+    m = _gecerli_manifest(data)
+    durumlar = {}
+    durumlar["liste"] = json.dumps([1, 2, 3])
+    durumlar["bos_nesne"] = json.dumps({})
+    x = dict(m); del x["tables"]; durumlar["tables_yok"] = json.dumps(x)
+    x = dict(m); x["tables"] = "metin"; durumlar["tables_metin"] = json.dumps(x)
+    x = dict(m); x["tables"] = {}; durumlar["tables_bos"] = json.dumps(x)
+    x = json.loads(json.dumps(m)); del x["tables"]["publishers"]["rows"]; durumlar["rows_yok"] = json.dumps(x)
+    x = json.loads(json.dumps(m)); x["tables"]["publishers"]["rows"] = "iki"; durumlar["rows_metin"] = json.dumps(x)
+    x = json.loads(json.dumps(m)); x["tables"]["publishers"] = 5; durumlar["tablo_girdisi_sayi"] = json.dumps(x)
+    x = json.loads(json.dumps(m)); del x["tables"]["publishers"]["sha256"]; durumlar["sha_yok"] = json.dumps(x)
+    x = dict(m); del x["sqlite_file_sha256"]; durumlar["dosya_ozeti_yok"] = json.dumps(x)
+    durumlar["gecersiz_json"] = "{bu json degil"
+    durumlar["utf8_degil"] = b"\xff\xfe\x00bozuk"
+    return durumlar
+
+
+@pytest.mark.parametrize("durum", [
+    "liste", "bos_nesne", "tables_yok", "tables_metin", "tables_bos", "rows_yok", "rows_metin",
+    "tablo_girdisi_sayi", "sha_yok", "dosya_ozeti_yok", "gecersiz_json", "utf8_degil",
+])
+def test_bozuk_manifest_cokmez_acik_hata_verir(sahte_db, tmp_path, durum):
+    data, _ = nova_yedek.create_backup_zip(str(sahte_db))
+    aday = _manifest_ile(data, _bozuk_manifestler(data)[durum])
+    ok, rapor, restored = nova_yedek.verify_backup_zip(aday, str(tmp_path))  # istisna fırlatmamalı
+    assert ok is False
+    assert restored is None
+    assert rapor[-1] == "SONUÇ: GEÇERSİZ YEDEK"
+    assert any("anifest" in satir for satir in rapor), rapor
+
+
+def test_veritabani_degil_dosya_cokmez(sahte_db, tmp_path):
+    data, man = nova_yedek.create_backup_zip(str(sahte_db))
+    cop = b"sqlite degil" * 100
+    man["sqlite_file_sha256"] = hashlib.sha256(cop).hexdigest()  # özet eşleşsin ki DB açılmaya çalışılsın
+    aday = _zip_degistir(data, db_bytes=cop, manifest=json.dumps(man))
+    ok, rapor, _ = nova_yedek.verify_backup_zip(aday, str(tmp_path))
+    assert ok is False
+    assert rapor[-1] == "SONUÇ: GEÇERSİZ YEDEK"
+
+
+def test_olmayan_dosya_yolu_cokmez(tmp_path):
+    ok, rapor, _ = nova_yedek.verify_backup_zip(str(tmp_path / "yok.zip"), str(tmp_path))
+    assert ok is False
+    assert rapor[-1] == "SONUÇ: GEÇERSİZ YEDEK"
+
+
+@pytest.mark.parametrize("durum", ["tables_yok", "rows_yok", "gecersiz_json", "liste"])
+def test_dogrulama_araci_bozuk_manifestte_hata_kodu_ve_acik_mesaj(sahte_db, tmp_path, durum):
+    data, _ = nova_yedek.create_backup_zip(str(sahte_db))
+    z = tmp_path / "bozuk.zip"
+    z.write_bytes(_manifest_ile(data, _bozuk_manifestler(data)[durum]))
+    r = subprocess.run([sys.executable, str(ROOT / "tools" / "yedek_dogrula.py"), str(z)],
+                       capture_output=True, text=True, timeout=120, cwd=str(tmp_path))
+    assert r.returncode == 1
+    assert "Traceback" not in r.stdout + r.stderr
+    assert "SONUÇ: GEÇERSİZ YEDEK" in r.stdout
+
+
+def test_fark_varsa_geri_yuklenen_yol_donmez(sahte_db, tmp_path):
+    data, man = nova_yedek.create_backup_zip(str(sahte_db))
+    man["tables"]["publishers"]["rows"] = 99  # yapı geçerli, içerik tutmuyor
+    ok, rapor, restored = nova_yedek.verify_backup_zip(_zip_degistir(data, manifest=json.dumps(man)), str(tmp_path))
+    assert ok is False
+    assert rapor[-1] == "SONUÇ: FARK VAR"
+    assert restored is None
+
+
+def test_beklenmeyen_hatada_cokmez_gecersiz_der(sahte_db, tmp_path, monkeypatch):
+    data, _ = nova_yedek.create_backup_zip(str(sahte_db))
+
+    def patla(_con):
+        raise RuntimeError("beklenmeyen")
+
+    monkeypatch.setattr(nova_yedek, "table_manifest", patla)
+    ok, rapor, restored = nova_yedek.verify_backup_zip(data, str(tmp_path))
+    assert ok is False and restored is None
+    assert rapor[-1] == "SONUÇ: GEÇERSİZ YEDEK"
+    assert any("RuntimeError" in r for r in rapor)
