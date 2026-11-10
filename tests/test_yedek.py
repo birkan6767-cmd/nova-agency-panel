@@ -300,6 +300,59 @@ def test_acilis_testi_yapilmadiysa_acikca_belirtilir(sahte_db, tmp_path, monkeyp
     z = _saglam_zip(sahte_db, tmp_path)
     monkeypatch.setitem(sys.modules, "streamlit.testing.v1", None)  # import → ImportError
     kod, satirlar = _araci_calistir(mod, z, monkeypatch, capsys)
-    assert kod == 0
+    assert kod == 2  # tam başarı (0) ile karıştırılmasın
     assert "Uygulama açılış testi (geri yüklenen kopya): YAPILMADI (streamlit kurulu değil)" in satirlar
-    assert satirlar[-1].startswith("SONUÇ: OK — DİKKAT: uygulama açılış testi YAPILMADI")
+    assert satirlar[-1].startswith("SONUÇ: KISMİ — uygulama açılış testi YAPILMADI")
+    assert not any(s.startswith("SONUÇ: OK") for s in satirlar)
+
+
+# ---- Açılış hatasında kişisel veri sızmaması ---------------------------------
+
+HASSAS = ["GIZLI_AD_7Q4", "0599 111 22 33", "PII-UID-9182", "gizli@ornek.test"]
+
+SIZDIRAN_APP = '''
+import logging, os, sqlite3, sys, warnings
+import streamlit as st
+con = sqlite3.connect("nova_agency_enterprise.db")
+satirlar = con.execute("SELECT name, uid, contact_info FROM publishers").fetchall()
+metin = repr(satirlar)
+print("STDOUT:", metin)
+os.write(1, ("FD1: " + metin + "\\n").encode())
+os.write(2, ("FD2: " + metin + "\\n").encode())
+sys.stderr.write("STDERR: " + metin + "\\n")
+logging.getLogger("streamlit").error("LOG: %s", metin)
+logging.getLogger().warning("ROOTLOG: %s", metin)
+warnings.warn("UYARI: " + metin)
+st.write(metin)
+raise ValueError("HATA: " + metin)
+'''
+
+
+def _sizdiran_kok(tmp_path):
+    kok = tmp_path / "sizdiran_kok"
+    (kok / "tools").mkdir(parents=True)
+    (kok / "app.py").write_text(SIZDIRAN_APP, encoding="utf-8")
+    (kok / "nova_yedek.py").write_bytes((ROOT / "nova_yedek.py").read_bytes())
+    (kok / "tools" / "yedek_dogrula.py").write_bytes((ROOT / "tools" / "yedek_dogrula.py").read_bytes())
+    return kok
+
+
+def test_acilis_hatasinda_kisisel_veri_stdout_stderr_log_a_yazilmaz(tmp_path):
+    db = tmp_path / "hassas.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE publishers (id INTEGER PRIMARY KEY, name TEXT, uid TEXT, contact_info TEXT)")
+    con.execute("INSERT INTO publishers (name, uid, contact_info) VALUES (?,?,?)", (HASSAS[0], HASSAS[2], HASSAS[1] + " " + HASSAS[3]))
+    con.commit(); con.close()
+    data, _ = nova_yedek.create_backup_zip(str(db))
+    z = tmp_path / "hassas.zip"; z.write_bytes(data)
+
+    kok = _sizdiran_kok(tmp_path)
+    r = subprocess.run([sys.executable, str(kok / "tools" / "yedek_dogrula.py"), str(z)],
+                       capture_output=True, text=True, timeout=180, cwd=str(tmp_path))
+    cikti = r.stdout + r.stderr
+    assert r.returncode == 1, cikti
+    assert "SONUÇ: BAŞARISIZ" in r.stdout
+    for gizli in HASSAS:
+        assert gizli not in cikti, f"'{gizli}' çıktıya sızdı"
+    # Araç hiçbir günlük dosyası bırakmamalı
+    assert not list(tmp_path.rglob("*.log"))
