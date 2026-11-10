@@ -88,3 +88,22 @@ Panel reposuna özel önceki ajanlar da duruyor: `kod-inceleyici`, `guvenlik-den
 - Testlerde gerçek müşteri/yayıncı verisi ve gerçek `*.db` kullanılmaz; uydurma veri + geçici dizin.
 - Şifre, token, API anahtarı, bağlantı dizesi hiçbir çıktıya, rapora, log'a, commit'e yazılmaz; sadece `dosya:satır` ve türü belirtilir.
 - Raporlarda kişisel veri maskelenir (telefon `05** *** **12`, ID son 4 hane).
+
+### Hazır uzman ajanlar (VoltAgent koleksiyonundan uyarlandı — lisans: `.claude/THIRD_PARTY_NOTICES.md`)
+| Ajan | Görev | Araçlar | Yazabildiği yer |
+|---|---|---|---|
+| `security-auditor` | Kanıta dayalı güvenlik denetimi | Read, Grep, Glob | Hiçbir yer (salt okunur) |
+| `code-reviewer` | Kod incelemesi | Read, Grep, Glob | Hiçbir yer (salt okunur) |
+| `auth-integration-engineer` | Giriş, oturum, deneme sınırı, rol/yetki | Read, Write, Edit, Bash, Glob, Grep | Uygulama kodu (onayla) |
+| `backend-developer` | Veri modelleri, iş mantığı, Excel içe aktarma | Read, Write, Edit, Bash, Glob, Grep | Uygulama kodu |
+| `frontend-developer` | Streamlit arayüzü, HTML/CSS, mobil | Read, Write, Edit, Bash, Glob, Grep | Uygulama kodu, site dosyaları |
+| `payment-integration` | Ödeme tasarımı/risk/test planı (kod yok) | Read, Grep, Glob | Hiçbir yer (şimdilik) |
+| `test-automator` | pytest + AppTest otomasyonu | Read, Write, Edit, Bash, Glob, Grep | `tests/`, `requirements-dev.txt`, `pytest.ini` |
+| `database-optimizer` | SQLite sorgu/indeks/şema analizi, yedek planı | Read, Grep, Glob, Bash | Hiçbir yer (diff önerir) |
+| `devops-engineer` | Yayın doğrulama, Secrets adımları, CI, bağımlılıklar | Read, Write, Edit, Bash, Glob, Grep | `.github/`, `.devcontainer/`, `requirements*.txt`, `tools/` |
+| `ui-ux-tester` | Yerelde sahte veriyle Playwright kullanıcı testi | Read, Grep, Glob, Bash | Hiçbir yer (ekran görüntüleri `/tmp`) |
+
+Ek çakışma kuralları:
+- Uygulama kodu yazarları (`nova-panel-yazilim`, `auth-integration-engineer`, `backend-developer`, `frontend-developer`, `streamlit-tasarimci`, `veri-uzmani`) **aynı anda çalıştırılmaz**; paralel gerekiyorsa `isolation: "worktree"`.
+- `tests/` yazarları (`test-automator`, `nova-test-kalite`, `test-yazici`) aynı anda çalıştırılmaz.
+- Salt okunur ajanlar (`security-auditor`, `code-reviewer`, `payment-integration`, `database-optimizer`, `ui-ux-tester`, `nova-guvenlik`, `kod-inceleyici`, `guvenlik-denetcisi`) paralel çalışabilir. (`database-optimizer` ve `ui-ux-tester` komut çalıştırabilir ama dosya yazmaz.)
