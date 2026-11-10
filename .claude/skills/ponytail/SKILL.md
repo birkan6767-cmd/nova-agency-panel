@@ -1,6 +1,6 @@
 ---
 name: ponytail
-description: "Buna gerçekten gerek var mı?" sorgusu. Yeni özellik, yeni bağımlılık, yeni dosya, yeni veritabanı tablosu/kolonu veya soyutlama eklemeden önce kullan. Gereksiz karmaşıklığı önler.
+description: 'Buna gerçekten gerek var mı? sorgusu. Yeni özellik, yeni bağımlılık, yeni dosya, yeni veritabanı tablosu/kolonu veya soyutlama eklemeden önce kullan. Gereksiz karmaşıklığı önler.'
 ---
 
 # Ponytail: Buna gerçekten gerek var mı?
