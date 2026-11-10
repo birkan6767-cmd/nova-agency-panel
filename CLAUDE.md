@@ -48,3 +48,43 @@ Bu dosya Claude'un bu repoda nasıl çalışacağını belirler (Karpathy tarzı
 - `streamlit-tasarimci` — boş sekmeleri ve ekranları `ui-ux-pro-max` kurallarıyla tasarlar.
 
 Önerilen akış: `superpowers` planı → `test-yazici` → kod (`veri-uzmani` / `streamlit-tasarimci`) → `kod-inceleyici` + `guvenlik-denetcisi`.
+
+## NOVA Ajan Ekibi
+
+### Hazır ajanlar (Claude Code ile gelir)
+- `Explore` — geniş kod araması (salt okunur). Kod nerede, hangi dosyada sorularında.
+- `Plan` — büyük işler için uygulama planı (salt okunur).
+- `general-purpose` — birden fazla adımlı araştırma/görevler.
+
+### Nova uzman ajanları
+| Ajan | Görev | Yazabildiği yer |
+|---|---|---|
+| `nova-satis-stok` | Satış, stok, kâr, komisyon, mükerrer kayıt kontrolü | `analiz/`, `raporlar/` |
+| `nova-panel-yazilim` | Bayi/ajans paneli geliştirme ve hata düzeltme | Uygulama kodu (`app.py` ve panel kodu) |
+| `nova-test-kalite` | Satış, stok, fiyat, yetki, ödeme akışı testleri | `tests/`, `requirements-dev.txt`, `pytest.ini` |
+| `nova-guvenlik` | Yetki, veri güvenliği, gizli bilgi denetimi | Hiçbir yer (yalnızca inceleme) |
+| `nova-web-sitesi` | Nova Medya sitesi, başvuru formu, mobil görünüm | Site dosyaları (`site/` veya site reposu) |
+| `nova-icerik-marka` | Reklam, duyuru, site ve sosyal medya metinleri | `icerik/` (taslak) |
+
+Panel reposuna özel önceki ajanlar da duruyor: `kod-inceleyici`, `guvenlik-denetcisi` (salt okunur), `test-yazici` (`tests/`), `veri-uzmani` ve `streamlit-tasarimci` (`app.py`).
+
+### Aynı dosyada çakışmayı önleme (ana oturum için kurallar)
+1. Her dosyanın tek sahibi var (yukarıdaki tablo). Sahibi olmayan ajan o dosyayı düzenlemez; değişikliği öneri/diff olarak raporlar, sahibi uygular.
+2. Uygulama kodunu (`app.py`) yazabilen ajanlar — `nova-panel-yazilim`, `streamlit-tasarimci`, `veri-uzmani` — **aynı anda çalıştırılmaz**; sırayla çalışır.
+3. `tests/` yazabilen ajanlar — `nova-test-kalite`, `test-yazici` — aynı anda çalıştırılmaz.
+4. Yazan iki ajan paralel çalışacaksa ayrı git worktree'de başlatılır (Agent aracında `isolation: "worktree"`), sonuçlar ana oturumda tek tek birleştirilir.
+5. Salt okunur ajanlar (`Explore`, `Plan`, `nova-guvenlik`, `kod-inceleyici`, `guvenlik-denetcisi`) her zaman paralel çalışabilir.
+
+### Onay gerektiren işlemler (kullanıcıya sormadan YAPILMAZ)
+- Canlıya alma / deploy, `main`'e birleştirme
+- Veritabanı şeması değişikliği
+- Gerçek satış veya stok kaydı oluşturma, değiştirme, silme
+- Fiyat, komisyon, tier eşiği, hakediş formülü değişikliği
+- Dışarıya mesaj, e-posta, DM, webhook gönderme; sosyal medyada yayın
+- Yeni erişim yetkisi verme (kullanıcı, rol, API anahtarı, GitHub/servis izni)
+- Dışarıdan eklenti, skill veya ajan kurma
+
+### Veri ve gizlilik
+- Testlerde gerçek müşteri/yayıncı verisi ve gerçek `*.db` kullanılmaz; uydurma veri + geçici dizin.
+- Şifre, token, API anahtarı, bağlantı dizesi hiçbir çıktıya, rapora, log'a, commit'e yazılmaz; sadece `dosya:satır` ve türü belirtilir.
+- Raporlarda kişisel veri maskelenir (telefon `05** *** **12`, ID son 4 hane).

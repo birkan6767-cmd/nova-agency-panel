@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./.streamlit/secrets.toml)",
+      "Read(./**/*.db)"
+    ],
+    "ask": [
+      "Bash(sqlite3:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push origin main:*)"
+    ]
+  }
+}
